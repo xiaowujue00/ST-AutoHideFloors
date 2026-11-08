@@ -4,6 +4,31 @@
 
 ![浮动面板](docs/panel.png)
 
+---
+
+## 安装方式
+
+### 1. 酒馆扩展管理器（推荐）
+
+打开 **扩展 → 安装扩展 → 从 Git 安装**，填写：
+
+```text
+https://github.com/xiaowujue00/ST-AutoHideFloors.git
+```
+
+安装完成后重启 TauriTavern，或刷新页面。
+
+### 2. 手动复制文件夹
+
+把仓库文件放到：
+
+```text
+%APPDATA%\com.tauritavern.client\data\extensions\third-party\auto-hide-floors
+```
+
+`manifest.json` 需要在该文件夹根目录。
+
+
 聊天右下角有一个「楼层」悬浮按钮，点开就是控制面板：
 
 - **全部楼层**：当前聊天的楼层范围，例如 `0–27`
