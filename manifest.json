@@ -1,0 +1,13 @@
+{
+    "display_name": "自动隐藏楼层 (Auto Hide Floors)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "DeepSeek Harness",
+    "version": "1.3.0",
+    "minimum_client_version": "1.13.0",
+    "auto_update": false
+}

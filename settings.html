@@ -1,0 +1,45 @@
+<div id="ahf-settings" class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+        <b>自动隐藏楼层</b>
+        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+        <label class="checkbox_label" for="ahf-enabled">
+            <input type="checkbox" id="ahf-enabled">
+            <span>启用自动隐藏</span>
+        </label>
+
+        <div class="ahf-row">
+            <span>只保留最近</span>
+            <input type="number" id="ahf-keep" class="text_pole" min="1" max="500" step="1">
+            <span>层消息</span>
+        </div>
+
+        <div class="ahf-row">
+            <span>计数方式</span>
+            <select id="ahf-count-mode" class="text_pole">
+                <option value="all">所有楼层</option>
+                <option value="normal">仅普通对话（跳过系统/旁白）</option>
+            </select>
+        </div>
+
+        <label class="checkbox_label" for="ahf-trim-context">
+            <input type="checkbox" id="ahf-trim-context">
+            <span>发送给 AI 时只带最近 N 层（省 token）</span>
+        </label>
+
+        <label class="checkbox_label" for="ahf-fold-ui">
+            <input type="checkbox" id="ahf-fold-ui">
+            <span>在聊天界面折叠较早楼层</span>
+        </label>
+
+        <div class="ahf-row">
+            <button type="button" id="ahf-open-panel" class="menu_button">打开浮动面板</button>
+        </div>
+
+        <small class="ahf-hint">
+            上下文排除只在生成时临时生效：生成数据组装完成后会立刻还原，不会把 is_system 写进聊天记录。
+            界面折叠只影响显示，两者可以独立开关。浮动面板里的“隐/显”会按区间手动隐藏，并在开启上下文排除时一并排除这些楼层。
+        </small>
+    </div>
+</div>

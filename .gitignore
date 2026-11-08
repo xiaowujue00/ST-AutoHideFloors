@@ -1,0 +1,15 @@
+# 测试生成物
+dev/screenshot-test.png
+dev/test-report.json
+dev/test-error.log
+
+# 打包与本地凭据
+*.zip
+.device-auth.json
+gh-token.json
+gh-user*.json
+gh-repo*.json
+
+# 系统文件
+.DS_Store
+Thumbs.db
