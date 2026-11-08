@@ -13,7 +13,18 @@
  */
 
 const MODULE_NAME = 'autoHideFloors';
-const EXTENSION_PATH = 'third-party/auto-hide-floors';
+
+// 仓库安装时文件夹名可能是仓库名（例如 SillyTavern-），不能写死 auto-hide-floors
+const EXTENSION_PATH = (() => {
+    try {
+        const parts = new URL(import.meta.url).pathname.split('/').filter(Boolean);
+        const folder = parts[parts.length - 2];
+        if (folder) return `third-party/${decodeURIComponent(folder)}`;
+    } catch {
+        // ignore
+    }
+    return 'third-party/auto-hide-floors';
+})();
 const HIDDEN_CLASS = 'ahf-hidden';
 const FLASH_CLASS = 'ahf-flash';
 const FAB_POS_KEY = 'ahf-fab-pos';
