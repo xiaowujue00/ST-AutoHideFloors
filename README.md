@@ -4,8 +4,6 @@
 
 ![浮动面板](docs/panel.png)
 
-- GitHub：<https://github.com/xiaowujue00/SillyTavern->
-
 聊天右下角有一个「楼层」悬浮按钮，点开就是控制面板：
 
 - **全部楼层**：当前聊天的楼层范围，例如 `0–27`
