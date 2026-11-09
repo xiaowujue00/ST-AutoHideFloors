@@ -38,6 +38,7 @@ const DEFAULTS = Object.freeze({
     countMode: 'all',
     foldUi: true,
     trimContext: true,
+    persistentHide: true,
 });
 
 /** 只对这些面向用户的生成类型做上下文排除；quiet 等内部生成保持完整上下文 */
@@ -62,7 +63,7 @@ const EVENTS_TO_WATCH = [
     'MORE_MESSAGES_LOADED',
 ];
 
-/** @type {{enabled: boolean, keep: number, countMode: 'all'|'normal', foldUi: boolean, trimContext: boolean}} */
+/** @type {{enabled: boolean, keep: number, countMode: 'all'|'normal', foldUi: boolean, trimContext: boolean, persistentHide: boolean}} */
 let settings = { ...DEFAULTS };
 /** 临时“显示全部”状态；切换聊天时自动复位 */
 let peek = false;
@@ -103,6 +104,9 @@ let generationPending = false;
 let pendingRegenerate = false;
 /** 上一次生成实际临时排除了多少层，便于 /ahf 排查 */
 let lastTrimmedCount = 0;
+/** 持久化隐藏的串行任务，避免重复 save */
+/** @type {Promise<number>|null} */
+let persistentApplyPromise = null;
 
 const getContext = () => SillyTavern.getContext();
 
@@ -120,6 +124,7 @@ function normalizeSettings(raw) {
         countMode: source.countMode === 'normal' ? 'normal' : 'all',
         foldUi: source.foldUi !== false,
         trimContext: source.trimContext !== false,
+        persistentHide: source.persistentHide !== false,
     };
 }
 
@@ -141,9 +146,14 @@ function persistSettings() {
 }
 
 /** 判断一条消息是否算作“普通对话楼层”（用于“仅普通对话”计数模式） */
+function isPluginMarkedHidden(message) {
+    return message?.extra?.ahf_hidden === true;
+}
+
 function isCountedMessage(message) {
     if (!message) return false;
-    if (message.is_system) return false;
+    // 插件自己永久隐藏的楼层仍然参与“最近 N 层”计数，否则会越隐藏越往前吞
+    if (message.is_system && !isPluginMarkedHidden(message)) return false;
     const type = message.extra?.type;
     return type !== 'narrator' && type !== 'comment' && type !== 'assistant_note';
 }
@@ -275,6 +285,7 @@ function addManualRange(range) {
     peek = false;
     saveManualRanges();
     update();
+    if (settings.persistentHide) void applyPersistentVisibility();
 }
 
 function removeManualRange(range) {
@@ -298,6 +309,7 @@ function removeManualRange(range) {
     manualRanges = remaining;
     saveManualRanges();
     update();
+    if (settings.persistentHide) void applyPersistentVisibility();
 }
 
 function scheduleUpdate(delay = 40) {
@@ -337,12 +349,14 @@ function armTemporaryRestoreTimer() {
 
 function applyTemporaryHiding() {
     if (!settings.enabled || !settings.trimContext) return;
+    if (settings.persistentHide) return;
     if (temporaryMarks.length > 0) {
         armTemporaryRestoreTimer();
         return;
     }
 
     ensureManualRangesForChat();
+    lastTrimmedCount = 0;
 
     const chat = getContext().chat;
     if (!Array.isArray(chat)) return;
@@ -378,6 +392,7 @@ function applyTemporaryHiding() {
 
     if (temporaryMarks.length > 0) {
         lastTrimmedCount = temporaryMarks.length;
+        console.debug('[auto-hide-floors] 本次生成临时排除', lastTrimmedCount, '层');
         armTemporaryRestoreTimer();
     }
 }
@@ -405,6 +420,151 @@ function restoreTemporaryHiding() {
             node.setAttribute('is_system', String(mark.originalIsSystem));
         }
     }
+}
+
+/* --------------------------------------------------------------------------
+ * 永久隐藏：直接写 is_system（等价于 /hide、/unhide），会保存进聊天记录
+ * -------------------------------------------------------------------------- */
+
+function countPluginMarkedHidden(chat = getContext().chat) {
+    if (!Array.isArray(chat)) return 0;
+    return chat.reduce((count, message) => count + (isPluginMarkedHidden(message) ? 1 : 0), 0);
+}
+
+function getPersistentDesiredSet(chat) {
+    const desired = new Set();
+    if (!settings.enabled || !settings.trimContext) return desired;
+
+    const start = computeStartIndex(chat);
+    for (let index = 0; index < start && index < chat.length; index++) {
+        desired.add(index);
+    }
+    for (const range of manualRanges) {
+        const startIndex = Math.max(0, range.start);
+        const endIndex = Math.min(chat.length - 1, range.end);
+        for (let index = startIndex; index <= endIndex; index++) {
+            desired.add(index);
+        }
+    }
+    return desired;
+}
+
+function setMessageHiddenDom(index, hidden) {
+    const node = document.querySelector(`#chat .mes[mesid="${index}"]`);
+    if (node instanceof HTMLElement) {
+        node.setAttribute('is_system', String(hidden));
+    }
+}
+
+async function applyPersistentVisibility() {
+    if (!settings.persistentHide) return 0;
+    restoreTemporaryHiding();
+    if (persistentApplyPromise) return persistentApplyPromise;
+
+    persistentApplyPromise = (async () => {
+        ensureManualRangesForChat();
+        const ctx = getContext();
+        const chat = ctx.chat;
+        if (!Array.isArray(chat) || chat.length === 0) return 0;
+
+        const desired = getPersistentDesiredSet(chat);
+        let changed = 0;
+
+        for (let index = 0; index < chat.length; index++) {
+            const message = chat[index];
+            if (!message) continue;
+
+            const marked = isPluginMarkedHidden(message);
+            if (desired.has(index)) {
+                if (!message.is_system) {
+                    if (!message.extra || typeof message.extra !== 'object') message.extra = {};
+                    message.extra.ahf_hidden = true;
+                    message.is_system = true;
+                    setMessageHiddenDom(index, true);
+                    changed++;
+                }
+                // 已经被用户手动 /hide 的消息不打插件标记，避免以后误 unhide
+                continue;
+            }
+
+            if (marked) {
+                message.is_system = false;
+                delete message.extra.ahf_hidden;
+                setMessageHiddenDom(index, false);
+                changed++;
+            }
+        }
+
+        if (changed > 0) {
+            try {
+                await ctx.saveChat?.();
+            } catch (error) {
+                console.warn('[auto-hide-floors] 保存永久隐藏状态失败：', error);
+            }
+            try {
+                ctx.swipe?.refresh?.();
+            } catch {
+                // ignore
+            }
+            update();
+        }
+        return changed;
+    })().finally(() => {
+        persistentApplyPromise = null;
+    });
+
+    return persistentApplyPromise;
+}
+
+async function restorePluginHiddenMessages() {
+    if (persistentApplyPromise) {
+        try {
+            await persistentApplyPromise;
+        } catch {
+            // ignore
+        }
+    }
+    const ctx = getContext();
+    const chat = ctx.chat;
+    if (!Array.isArray(chat) || chat.length === 0) return 0;
+
+    let changed = 0;
+    for (let index = 0; index < chat.length; index++) {
+        const message = chat[index];
+        if (!isPluginMarkedHidden(message)) continue;
+
+        message.is_system = false;
+        delete message.extra.ahf_hidden;
+        setMessageHiddenDom(index, false);
+        changed++;
+    }
+
+    if (changed > 0) {
+        try {
+            await ctx.saveChat?.();
+        } catch (error) {
+            console.warn('[auto-hide-floors] 恢复永久隐藏状态失败：', error);
+        }
+        try {
+            ctx.swipe?.refresh?.();
+        } catch {
+            // ignore
+        }
+        update();
+    }
+    return changed;
+}
+
+let persistentApplyTimer = null;
+function schedulePersistentApply(delay = 250) {
+    if (!settings.persistentHide) return;
+    if (persistentApplyTimer !== null) {
+        clearTimeout(persistentApplyTimer);
+    }
+    persistentApplyTimer = window.setTimeout(() => {
+        persistentApplyTimer = null;
+        void applyPersistentVisibility();
+    }, delay);
 }
 
 /* --------------------------------------------------------------------------
@@ -487,7 +647,7 @@ function ensurePanel() {
         </div>
         <div class="ahf-panel-stats">
             <div class="ahf-stat"><span>全部楼层</span><b data-stat="all">0</b></div>
-            <div class="ahf-stat"><span>隐藏楼层</span><b data-stat="hidden">0</b></div>
+            <div class="ahf-stat"><span>界面折叠</span><b data-stat="hidden">0</b></div>
             <div class="ahf-stat"><span>AI 排除</span><b data-stat="context">0</b></div>
             <div class="ahf-stat ahf-stat-keep">
                 <span>保留最近</span>
@@ -508,6 +668,7 @@ function ensurePanel() {
             <button type="button" class="menu_button" data-action="show">显</button>
         </div>
         <div class="ahf-panel-hint" data-stat="range">区间：未选择</div>
+        <div class="ahf-panel-hint" data-stat="last">上次生成：暂无记录</div>
         <div class="ahf-panel-footer">
             <button type="button" class="menu_button" data-action="peek">显示全部</button>
         </div>
@@ -751,6 +912,17 @@ function updatePanel() {
     }
     setText('[data-stat="range"]', rangeText);
 
+    const lastHint = panelEl.querySelector('[data-stat="last"]');
+    if (lastHint) {
+        // 永久模式下不显示“已写入聊天”的提示，避免面板冗余
+        lastHint.style.display = settings.persistentHide ? 'none' : '';
+        if (!settings.persistentHide) {
+            lastHint.textContent = lastTrimmedCount > 0
+                ? `上次生成排除 ${lastTrimmedCount} 层`
+                : '上次生成：暂无记录';
+        }
+    }
+
     const peekButton = panelEl.querySelector('[data-action="peek"]');
     if (peekButton) {
         peekButton.textContent = peek ? '恢复折叠' : '显示全部';
@@ -865,9 +1037,11 @@ function bindPanelEvents() {
     keepInput?.addEventListener('change', () => {
         settings.keep = clampInteger(keepInput.value, 1, 500, settings.keep);
         keepInput.value = String(settings.keep);
+        peek = false;
         persistSettings();
         syncSettingsUi();
         update();
+        if (settings.persistentHide) void applyPersistentVisibility();
     });
     keepInput?.addEventListener('keydown', event => {
         if (event.key === 'Enter') {
@@ -985,6 +1159,9 @@ function bindChatEvents() {
                 syncSettingsUi();
                 mountSettings();
             }
+            if (eventName === 'MESSAGE_RECEIVED' && settings.persistentHide) {
+                schedulePersistentApply();
+            }
             scheduleUpdate(eventName === 'APP_READY' ? 0 : 40);
         });
     }
@@ -1032,7 +1209,11 @@ function bindChatEvents() {
         applyTemporaryHiding();
     });
 
-    onLast('MESSAGE_SENT', () => {
+    onLast('MESSAGE_SENT', async () => {
+        if (settings.persistentHide) {
+            await applyPersistentVisibility();
+            return;
+        }
         if (!generationPending) return;
         if (pendingRegenerate) return;
         if (getContext().groupId) return;
@@ -1096,12 +1277,14 @@ function syncSettingsUi() {
     const countMode = root.querySelector('#ahf-count-mode');
     const foldUi = root.querySelector('#ahf-fold-ui');
     const trimContext = root.querySelector('#ahf-trim-context');
+    const persistentHide = root.querySelector('#ahf-persistent-hide');
 
     if (enabled) enabled.checked = settings.enabled;
     if (keep) keep.value = String(settings.keep);
     if (countMode) countMode.value = settings.countMode;
     if (foldUi) foldUi.checked = settings.foldUi;
     if (trimContext) trimContext.checked = settings.trimContext;
+    if (persistentHide) persistentHide.checked = settings.persistentHide;
 }
 
 function bindSettingsUi(root) {
@@ -1110,12 +1293,16 @@ function bindSettingsUi(root) {
     const countMode = root.querySelector('#ahf-count-mode');
     const foldUi = root.querySelector('#ahf-fold-ui');
     const trimContext = root.querySelector('#ahf-trim-context');
+    const persistentHide = root.querySelector('#ahf-persistent-hide');
 
     enabled?.addEventListener('change', () => {
         settings.enabled = enabled.checked;
         if (!settings.enabled) {
             peek = false;
             restoreTemporaryHiding();
+            if (settings.persistentHide) void restorePluginHiddenMessages();
+        } else if (settings.persistentHide) {
+            void applyPersistentVisibility();
         }
         persistSettings();
         update();
@@ -1124,8 +1311,10 @@ function bindSettingsUi(root) {
     keep?.addEventListener('change', () => {
         settings.keep = clampInteger(keep.value, 1, 500, DEFAULTS.keep);
         keep.value = String(settings.keep);
+        peek = false;
         persistSettings();
         update();
+        if (settings.persistentHide) void applyPersistentVisibility();
     });
 
     countMode?.addEventListener('change', () => {
@@ -1143,9 +1332,34 @@ function bindSettingsUi(root) {
 
     trimContext?.addEventListener('change', () => {
         settings.trimContext = trimContext.checked;
-        if (!settings.trimContext) restoreTemporaryHiding();
+        if (!settings.trimContext) {
+            restoreTemporaryHiding();
+            if (settings.persistentHide) void restorePluginHiddenMessages();
+        } else if (settings.persistentHide) {
+            void applyPersistentVisibility();
+        }
         persistSettings();
         update();
+    });
+
+    persistentHide?.addEventListener('change', () => {
+        settings.persistentHide = persistentHide.checked;
+        persistSettings();
+        if (settings.persistentHide) {
+            void applyPersistentVisibility();
+        } else {
+            void restorePluginHiddenMessages();
+        }
+        update();
+    });
+
+    root.querySelector('#ahf-restore-hidden')?.addEventListener('click', () => {
+        if (settings.persistentHide) {
+            settings.persistentHide = false;
+            syncSettingsUi();
+            persistSettings();
+        }
+        void restorePluginHiddenMessages();
     });
 
     root.querySelector('#ahf-open-panel')?.addEventListener('click', () => openPanel());
@@ -1195,7 +1409,7 @@ function registerSlashCommand() {
     const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx;
     if (!SlashCommandParser?.addCommandObject || !SlashCommand?.fromProps) return;
 
-    const callback = (_args, value) => {
+    const callback = async (_args, value) => {
         const action = String(value ?? '').trim().toLowerCase();
 
         if (!action) {
@@ -1204,9 +1418,16 @@ function registerSlashCommand() {
             const modes = [
                 settings.foldUi ? '界面折叠' : null,
                 settings.trimContext ? '上下文排除' : null,
+                settings.persistentHide ? '永久 /hide' : '临时标记',
             ].filter(Boolean).join(' + ') || '无';
             const pause = peek ? '，当前正在显示全部' : '';
-            const last = lastTrimmedCount > 0 ? `；上次生成排除 ${lastTrimmedCount} 层` : '';
+            let last = '';
+            if (settings.persistentHide) {
+                const marked = countPluginMarkedHidden(getContext().chat);
+                last = marked > 0 ? `；永久隐藏 ${marked} 层` : '';
+            } else if (lastTrimmedCount > 0) {
+                last = `；上次生成排除 ${lastTrimmedCount} 层`;
+            }
             return `自动隐藏楼层：${state}，模式 ${modes}，保留最近 ${settings.keep} 层，已处理 ${hidden} 层${last}${pause}`;
         }
 
@@ -1239,7 +1460,12 @@ function registerSlashCommand() {
 
         if (action === 'trim' || action === 'trim-on' || action === 'trim-off') {
             settings.trimContext = action === 'trim' ? !settings.trimContext : action === 'trim-on';
-            if (!settings.trimContext) restoreTemporaryHiding();
+            if (!settings.trimContext) {
+                restoreTemporaryHiding();
+                if (settings.persistentHide) await restorePluginHiddenMessages();
+            } else if (settings.persistentHide) {
+                await applyPersistentVisibility();
+            }
             persistSettings();
             syncSettingsUi();
             update();
@@ -1249,7 +1475,12 @@ function registerSlashCommand() {
         const trimMatch = action.match(/^trim\s+(on|off|true|false|1|0)$/);
         if (trimMatch) {
             settings.trimContext = ['on', 'true', '1'].includes(trimMatch[1]);
-            if (!settings.trimContext) restoreTemporaryHiding();
+            if (!settings.trimContext) {
+                restoreTemporaryHiding();
+                if (settings.persistentHide) await restorePluginHiddenMessages();
+            } else if (settings.persistentHide) {
+                await applyPersistentVisibility();
+            }
             persistSettings();
             syncSettingsUi();
             update();
@@ -1259,25 +1490,39 @@ function registerSlashCommand() {
         const keep = Number.parseInt(action, 10);
         if (Number.isFinite(keep)) {
             settings.keep = clampInteger(keep, 1, 500, settings.keep);
+            peek = false;
             persistSettings();
             syncSettingsUi();
             update();
+            if (settings.persistentHide) await applyPersistentVisibility();
             return `已设置为保留最近 ${settings.keep} 层。`;
         }
 
-        return '用法：/ahf [show|hide|toggle|trim on|trim off|数字]';
+        if (action === 'restore') {
+            if (settings.persistentHide) {
+                settings.persistentHide = false;
+                syncSettingsUi();
+                persistSettings();
+            }
+            const changed = await restorePluginHiddenMessages();
+            return changed > 0
+                ? `已恢复 ${changed} 层插件永久隐藏的楼层，并切换到临时模式。`
+                : '没有找到插件永久隐藏的楼层，已切换到临时模式。';
+        }
+
+        return '用法：/ahf [show|hide|toggle|trim on|trim off|restore|数字]';
     };
 
     const props = {
         name: 'ahf',
         callback,
-        helpString: '自动隐藏楼层：显示全部 / 恢复折叠 / 开关上下文排除 / 设置保留层数（1–500）。',
+        helpString: '自动隐藏楼层：显示全部 / 恢复折叠 / 开关上下文排除 / 恢复永久隐藏 / 设置保留层数（1–500）。',
     };
 
     if (SlashCommandArgument?.fromProps && ARGUMENT_TYPE?.STRING) {
         props.unnamedArgumentList = [
             SlashCommandArgument.fromProps({
-                description: 'show、hide、toggle、trim on/off，或要保留的层数',
+                description: 'show、hide、toggle、trim on/off、restore，或要保留的层数',
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: false,
             }),

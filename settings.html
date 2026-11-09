@@ -33,13 +33,19 @@
             <span>在聊天界面折叠较早楼层</span>
         </label>
 
+        <label class="checkbox_label" for="ahf-persistent-hide">
+            <input type="checkbox" id="ahf-persistent-hide">
+            <span>使用 /hide 永久隐藏（会写入聊天记录）</span>
+        </label>
+
         <div class="ahf-row">
+            <button type="button" id="ahf-restore-hidden" class="menu_button">恢复并关闭永久隐藏</button>
             <button type="button" id="ahf-open-panel" class="menu_button">打开浮动面板</button>
         </div>
 
         <small class="ahf-hint">
-            上下文排除只在生成时临时生效：生成数据组装完成后会立刻还原，不会把 is_system 写进聊天记录。
-            界面折叠只影响显示，两者可以独立开关。浮动面板里的“隐/显”会按区间手动隐藏，并在开启上下文排除时一并排除这些楼层。
+            永久隐藏会像酒馆的 /hide 一样把 is_system 写进聊天文件，AI 以后都不会收到这些楼层；增大“保留最近”时会自动 /unhide 插件隐藏的楼层。
+            关闭“永久隐藏”或点“恢复并关闭永久隐藏”会把插件写进去的标记清掉。界面折叠只影响显示，两者可以独立开关。
         </small>
     </div>
 </div>
