@@ -1,6 +1,6 @@
 # 自动隐藏楼层（Auto Hide Floors）
 
-一个适用于 **TauriTavern / SillyTavern 1.13+** 的第三方扩展：只保留最近 `N` 层消息
+一个适用于 **TauriTavern 2.3.0/ SillyTavern 1.13+** 的第三方扩展：自动保留最近 `N` 层消息
 
 ![浮动面板](docs/panel.png)
 
