@@ -2,7 +2,8 @@
 
 一个适用于 **TauriTavern 2.3.0/ SillyTavern 1.13+** 的第三方扩展：自动保留最近 `N` 层消息
 
-![浮动面板](docs/panel.png)
+![浮动面板]
+<img width="252" height="248" alt="image" src="https://github.com/user-attachments/assets/a88abe88-9636-4027-8bff-7c3041e4cd75" />
 
 ---
 
